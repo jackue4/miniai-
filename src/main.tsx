@@ -1,4 +1,4 @@
-import React, { FormEvent, useState } from 'react';
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -16,6 +16,8 @@ type Proposal = {
   material: CubeState['material'];
   summary: string[];
 };
+
+type AiPhase = 'idle' | 'thinking' | 'typing' | 'ready' | 'applied';
 
 const cubeColors: Record<CubeState['color'], string> = {
   默认材质: '#ffffff',
@@ -61,18 +63,60 @@ function parsePrompt(prompt: string, current: CubeState): Proposal {
   };
 }
 
+function buildAnswerText(proposal: Proposal) {
+  return `我已经理解你的需求，并生成了一个可应用的属性修改方案：\n1. ${proposal.summary[0]}\n2. ${proposal.summary[1]}\n3. ${proposal.summary[2]}\n你可以先确认效果，点击“应用修改”后我会把这些属性同步到当前立方体。`;
+}
+
 function App() {
   const [aiOpen, setAiOpen] = useState(true);
   const [prompt, setPrompt] = useState('把这个立方体变大一点，颜色改为红色，并且放大 2 倍');
   const [cube, setCube] = useState<CubeState>({ scale: 1, color: '默认材质', material: '默认材质' });
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [applied, setApplied] = useState<string[]>([]);
+  const [lastPrompt, setLastPrompt] = useState('');
+  const [aiPhase, setAiPhase] = useState<AiPhase>('idle');
+  const [visibleSteps, setVisibleSteps] = useState(0);
+  const [typedText, setTypedText] = useState('');
+
+  const answerText = useMemo(() => proposal ? buildAnswerText(proposal) : '', [proposal]);
+
+  useEffect(() => {
+    if (aiPhase !== 'thinking') return;
+    setVisibleSteps(0);
+    const timers = [0, 650, 1300].map((delay, index) => window.setTimeout(() => setVisibleSteps(index + 1), delay));
+    const doneTimer = window.setTimeout(() => setAiPhase('typing'), 1900);
+    return () => {
+      timers.forEach(window.clearTimeout);
+      window.clearTimeout(doneTimer);
+    };
+  }, [aiPhase]);
+
+  useEffect(() => {
+    if (aiPhase !== 'typing' || !answerText) return;
+    setTypedText('');
+    let index = 0;
+    const timer = window.setInterval(() => {
+      index += 1;
+      setTypedText(answerText.slice(0, index));
+      if (index >= answerText.length) {
+        window.clearInterval(timer);
+        window.setTimeout(() => setAiPhase('ready'), 220);
+      }
+    }, 22);
+    return () => window.clearInterval(timer);
+  }, [aiPhase, answerText]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!prompt.trim()) return;
+    const nextPrompt = prompt.trim();
+    if (!nextPrompt || aiPhase === 'thinking' || aiPhase === 'typing') return;
     setAiOpen(true);
-    setProposal(parsePrompt(prompt, cube));
+    setApplied([]);
+    setLastPrompt(nextPrompt);
+    setProposal(parsePrompt(nextPrompt, cube));
+    setTypedText('');
+    setVisibleSteps(0);
+    setAiPhase('thinking');
   };
 
   const apply = () => {
@@ -80,12 +124,17 @@ function App() {
     setCube({ scale: proposal.scale, color: proposal.color, material: proposal.material });
     setApplied(proposal.summary);
     setProposal(null);
+    setAiPhase('applied');
   };
 
   const reset = () => {
     setCube({ scale: 1, color: '默认材质', material: '默认材质' });
     setProposal(null);
     setApplied([]);
+    setLastPrompt('');
+    setTypedText('');
+    setVisibleSteps(0);
+    setAiPhase('idle');
     setPrompt('把这个立方体变大一点，颜色改为红色，并且放大 2 倍');
   };
 
@@ -106,6 +155,10 @@ function App() {
           applied={applied}
           cube={cube}
           reset={reset}
+          lastPrompt={lastPrompt}
+          aiPhase={aiPhase}
+          visibleSteps={visibleSteps}
+          typedText={typedText}
         />
       </section>
     </main>
@@ -143,6 +196,10 @@ function PropertyOverlay(props: {
   applied: string[];
   cube: CubeState;
   reset: () => void;
+  lastPrompt: string;
+  aiPhase: AiPhase;
+  visibleSteps: number;
+  typedText: string;
 }) {
   return (
     <aside className="property-overlay">
@@ -175,34 +232,25 @@ function PropertyOverlay(props: {
             </button>
             {props.aiOpen && (
               <div className="ai-body">
-                <div className="ai-scroll">
-                  <p className="assistant-message">你好！我是 AI 助手。你可以告诉我想如何调整当前对象的属性。</p>
-
-                  {props.proposal && (
-                    <div className="ai-plan">
-                      <div className="plan-preview" style={{ background: cubeColors[props.proposal.color] }} />
-                      <div className="plan-detail">
-                        <strong>AI 生成的修改方案</strong>
-                        {props.proposal.summary.map((item) => <span key={item}>• {item}</span>)}
-                      </div>
-                      <div className="plan-actions">
-                        <button onClick={props.reset}>取消</button>
-                        <button className="primary" onClick={props.apply}>应用修改</button>
-                      </div>
-                    </div>
-                  )}
-
-                  {props.applied.length > 0 && !props.proposal && (
-                    <div className="done-card">
-                      <strong>已应用属性修改</strong>
-                      {props.applied.map((item) => <span key={item}>✓ {item}</span>)}
-                    </div>
-                  )}
-                </div>
+                <AiConversation
+                  applied={props.applied}
+                  aiPhase={props.aiPhase}
+                  lastPrompt={props.lastPrompt}
+                  proposal={props.proposal}
+                  typedText={props.typedText}
+                  visibleSteps={props.visibleSteps}
+                  onApply={props.apply}
+                  onReset={props.reset}
+                />
 
                 <form className="chat-input" onSubmit={props.submit}>
-                  <input value={props.prompt} onChange={(event) => props.setPrompt(event.target.value)} placeholder="请输入你的需求..." />
-                  <button type="submit">➤</button>
+                  <input
+                    disabled={props.aiPhase === 'thinking' || props.aiPhase === 'typing'}
+                    value={props.prompt}
+                    onChange={(event) => props.setPrompt(event.target.value)}
+                    placeholder="请输入你的需求..."
+                  />
+                  <button disabled={props.aiPhase === 'thinking' || props.aiPhase === 'typing'} type="submit">➤</button>
                 </form>
               </div>
             )}
@@ -210,6 +258,62 @@ function PropertyOverlay(props: {
         </div>
       </section>
     </aside>
+  );
+}
+
+function AiConversation(props: {
+  applied: string[];
+  aiPhase: AiPhase;
+  lastPrompt: string;
+  proposal: Proposal | null;
+  typedText: string;
+  visibleSteps: number;
+  onApply: () => void;
+  onReset: () => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const steps = ['识别当前选中对象：立方体', '解析你的修改意图：颜色、材质和缩放', '检查属性约束，生成可应用方案'];
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+  }, [props.aiPhase, props.visibleSteps, props.typedText, props.applied.length]);
+
+  return (
+    <div className="ai-scroll" ref={scrollRef}>
+      <p className="assistant-message">你好！我是 AI 助手。你可以告诉我想如何调整当前对象的属性。</p>
+
+      {props.lastPrompt && <div className="user-bubble">{props.lastPrompt}</div>}
+
+      {(props.aiPhase === 'thinking' || props.aiPhase === 'typing' || props.aiPhase === 'ready') && (
+        <div className="thinking-card">
+          <div className="thinking-head"><span className="dot-loader" />AI 正在思考</div>
+          {steps.slice(0, props.visibleSteps).map((step) => <div className="thinking-step" key={step}>✓ {step}</div>)}
+        </div>
+      )}
+
+      {(props.aiPhase === 'typing' || props.aiPhase === 'ready') && props.proposal && (
+        <div className="ai-plan dialogue-plan">
+          <div className="plan-preview" style={{ background: cubeColors[props.proposal.color] }} />
+          <div className="plan-detail typewriter-text">
+            {props.typedText.split('\n').map((line, index) => <span key={`${line}-${index}`}>{line || ' '}</span>)}
+            {props.aiPhase === 'typing' && <i className="type-caret" />}
+          </div>
+          {props.aiPhase === 'ready' && (
+            <div className="plan-actions">
+              <button onClick={props.onReset}>取消</button>
+              <button className="primary" onClick={props.onApply}>应用修改</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {props.applied.length > 0 && props.aiPhase === 'applied' && (
+        <div className="done-card">
+          <strong>已应用属性修改</strong>
+          {props.applied.map((item) => <span key={item}>✓ {item}</span>)}
+        </div>
+      )}
+    </div>
   );
 }
 
